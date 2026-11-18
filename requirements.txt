@@ -1,0 +1,10 @@
+edgartools
+pandas
+openpyxl
+yfinance
+openai
+anthropic
+requests
+python-dotenv
+pyyaml
+pytest

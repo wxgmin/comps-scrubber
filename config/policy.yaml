@@ -1,0 +1,36 @@
+# Adjustment policy applied consistently across all peers.
+# treatment:
+#   add_back  -> increase adjusted EBITDA by the item amount (a cost / one-off expense)
+#   subtract  -> decrease adjusted EBITDA by the item amount (a one-off gain)
+#   auto      -> add back losses, subtract gains (used for asset sales)
+# enabled: false means the category is ignored entirely (e.g. SBC toggle).
+
+categories:
+  Restructuring:
+    treatment: add_back
+    enabled: true
+
+  Impairment:
+    treatment: add_back
+    enabled: true
+
+  Litigation:
+    treatment: add_back
+    enabled: true
+
+  M&A_Transaction:
+    treatment: add_back
+    enabled: true
+
+  Asset_Sale:
+    treatment: auto
+    enabled: true
+
+  StockBasedCompensation:
+    treatment: add_back
+    enabled: false          # toggle to true to add SBC back (matches most software non-GAAP)
+
+  Other_NonRecurring:
+    treatment: add_back
+    enabled: true
+    requires_review: true

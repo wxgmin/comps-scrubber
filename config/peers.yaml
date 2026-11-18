@@ -1,0 +1,15 @@
+# Peer set for the demo / default run.
+peers:
+  - MSFT
+  - ORCL
+  - CRM
+  - ADBE
+  - NOW
+  - INTU
+  - SNOW
+  - WDAY
+
+# Number of most-recent complete fiscal years to pull per company.
+num_years: 3
+
+output: output/comps_output.xlsx
