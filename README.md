@@ -20,10 +20,12 @@ us-gaap tag exists, against XBRL).
    (revenue, operating income, D&A, net income, total debt, cash, share count).
 3. **Retrieve source text**: the 10-K and the 8-K Exhibit 99.1 earnings release.
 4. **Extract** candidate adjustments + the company's own reported adjusted EBITDA via
-   OpenAI structured output.
-5. **Verify** every amount by code: (a) the quoted sentence must appear verbatim in the filing,
-   (b) the amount must be recoverable from the digits + scale in that quote, (c) where a us-gaap
-   tag exists, the amount is cross-checked against XBRL, (d) the bridge must foot.
+   LLM structured output (OpenAI, Anthropic, OpenAI-compatible, or Codex/ChatGPT).
+5. **Verify** every amount by code: (a) the quoted sentence must appear verbatim in the filing
+   (with a minimum length), (b) the amount must be recoverable from the digits + scale in that
+   quote, (c) where a us-gaap tag exists, the amount is cross-checked against XBRL — a gross
+   (>25%) mismatch is rejected, and the sign (gain vs loss) is cross-checked for directional tags,
+   (d) the bridge is footed by construction.
 6. **Apply policy** to normalize items into one category schema across peers.
 7. **Value**: EV = market cap (price × shares) + debt − cash; EV/Revenue, EV/EBITDA (reported +
    adjusted), P/E; mean + median.
@@ -103,8 +105,12 @@ python -m pytest -q
 
 - **SBC** is the main systematic difference vs company non-GAAP (see the demo write-up).
 - **Total debt** is `DebtLongtermAndShorttermCombinedAmount` when the company tags it, otherwise
-  the sum of long-term debt + short-term borrowings + notes payable + commercial paper +
-  convertible notes. Unusual debt structures are worth a human glance.
+  long-term debt (incl. current portion) + short-term borrowings + finance/capital leases, with
+  convertible notes added only when the filer reports no traditional long-term-debt tag.
+  Unusual debt structures are worth a human glance.
+- **Market cap** uses the current price × the latest fiscal year's XBRL cover-page share count,
+  falling back to yfinance's current shares outstanding when XBRL has none (flagged).
 - **Section links** point to the filing document URL (with the section name + quote in the cell),
   since not all filings expose stable per-section anchors.
-- First run downloads filings (cached in `cache/`); re-runs are fast.
+- First run downloads filings (cached in `cache/`); re-runs are fast. LLM extractions are cached
+  too and auto-invalidate when the prompt/schema changes.

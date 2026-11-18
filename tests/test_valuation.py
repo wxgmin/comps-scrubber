@@ -1,5 +1,5 @@
 from comps.models import Financials
-from comps.valuation import compute_row, enterprise_value, market_cap
+from comps.valuation import _as_price, compute_row, enterprise_value, market_cap
 
 
 def _fin(**kw):
@@ -33,3 +33,18 @@ def test_compute_row_multiples():
     assert abs(row.ev_ebitda_reported - 770e9 / 60e9) < 1e-9
     assert abs(row.ev_ebitda_adjusted - 770e9 / 65e9) < 1e-9
     assert abs(row.pe - 740e9 / 30e9) < 1e-9
+
+
+def test_as_price_rejects_nan_inf():
+    assert _as_price(float("nan")) is None
+    assert _as_price(float("inf")) is None
+    assert _as_price(-1.0) is None
+    assert _as_price(100.0) == 100.0
+
+
+def test_compute_row_negative_ebitda_is_none():
+    fin = _fin(operating_income=-10e9, d_and_a=1e9)  # reported EBITDA = -9e9
+    row = compute_row(fin, -8e9, 100.0, 7.4e9)
+    assert row.ev_ebitda_reported is None
+    assert row.ev_ebitda_adjusted is None
+    assert row.ev_revenue is not None  # revenue stays positive

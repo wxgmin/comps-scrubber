@@ -30,8 +30,17 @@ CASH_TAGS = [
     "CashAndCashEquivalentsAtCarryingValue",
     "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
 ]
-TOTAL_DEBT_TAGS = ["DebtLongtermAndShorttermCombinedAmount", "DebtInstrumentCarryingAmount"]
-ST_DEBT_TAGS = ["ShortTermBorrowings", "NotesPayableCurrent", "CommercialPaper"]
+# `DebtLongtermAndShorttermCombinedAmount` is the canonical total-debt tag. We deliberately
+# do NOT use `DebtInstrumentCarryingAmount` here: it is a per-instrument tag (one fact per
+# tranche), not an aggregate.
+TOTAL_DEBT_TAGS = ["DebtLongtermAndShorttermCombinedAmount"]
+ST_DEBT_TAGS = ["ShortTermBorrowings"]
+LEASE_TAGS = [
+    "FinanceLeaseLiabilityCurrent",
+    "FinanceLeaseLiabilityNoncurrent",
+    "CapitalLeaseObligationsCurrent",
+    "CapitalLeaseObligationsNoncurrent",
+]
 CONVERTIBLE_TAGS = [
     "ConvertibleDebt",
     "ConvertibleDebtNoncurrent",
@@ -76,22 +85,36 @@ def annual_facts_from_10k(facts: list[dict]) -> list[dict]:
 
 
 def _nearest_instant(facts: list[dict], fy_end: str) -> Optional[dict]:
-    candidates = [f for f in facts if f.get("form") in ("10-K", "10-K/A")]
+    """Pick the balance-sheet (instant) fact for a fiscal-year end.
+
+    Instant facts have no `start`; duration (flow) facts do. Dedupe by period-end
+    keeping the latest `filed` (handles 10-K/A amendments), prefer an exact date,
+    then the nearest date within 7 days AFTER the FYE (never before).
+    """
     target = _parse_date(fy_end)
     if target is None:
         return None
-    for f in candidates:
-        if f.get("end") == fy_end:
-            return f
-    best, best_diff = None, None
-    for f in candidates:
-        end = _parse_date(f.get("end"))
-        if end is None:
+    best_by_end: dict[str, dict] = {}
+    for f in facts:
+        if f.get("form") not in ("10-K", "10-K/A") or "start" in f:
             continue
-        diff = abs((end - target).days)
-        if best_diff is None or diff < best_diff:
+        end = f.get("end")
+        if end and (
+            end not in best_by_end
+            or f.get("filed", "") > best_by_end[end].get("filed", "")
+        ):
+            best_by_end[end] = f
+    if fy_end in best_by_end:
+        return best_by_end[fy_end]
+    best, best_diff = None, None
+    for end, f in best_by_end.items():
+        d = _parse_date(end)
+        if d is None:
+            continue
+        diff = (d - target).days
+        if 0 <= diff <= 7 and (best_diff is None or diff < best_diff):
             best, best_diff = f, diff
-    return best if (best_diff is not None and best_diff <= 7) else None
+    return best
 
 
 def _nearest_duration(facts: list[dict], fy_end: str) -> Optional[dict]:
@@ -150,11 +173,11 @@ class SECClient:
 
     def _duration_usd(self, cf: dict, tag: str, fy_end: str) -> Optional[float]:
         f = _nearest_duration(self._usd_facts(cf, tag), fy_end)
-        return f["val"] if f else None
+        return f.get("val") if f else None
 
     def _instant_usd(self, cf: dict, tag: str, fy_end: str) -> Optional[float]:
         f = _nearest_instant(self._usd_facts(cf, tag), fy_end)
-        return f["val"] if f else None
+        return f.get("val") if f else None
 
     # --- public extractors ---
 
@@ -188,26 +211,47 @@ class SECClient:
         return None
 
     def total_debt(self, cf: dict, fy_end: str) -> Optional[float]:
-        # Canonical combined total-debt tags (covers Oracle, Adobe, etc.).
+        """Total interest-bearing debt (LT debt incl. current portion + short-term borrowings
+        + finance leases + convertible notes, when the filer reports them separately).
+
+        Precedence avoids double-counting: the canonical combined tag wins; otherwise the
+        split LT-debt tags are summed and convertible notes are added only when the filer
+        reports no traditional LT-debt tag at all (convertibles are otherwise usually folded
+        into LongTermDebt*).
+        """
         for tag in TOTAL_DEBT_TAGS:
             v = self._instant_usd(cf, tag, fy_end)
             if v is not None:
                 return v
 
-        # Component sum for companies that only split debt across tags.
         lt = self._instant_usd(cf, "LongTermDebt", fy_end)
         if lt is None:
             n = self._instant_usd(cf, "LongTermDebtNoncurrent", fy_end)
             c = self._instant_usd(cf, "LongTermDebtCurrent", fy_end)
             if n is not None or c is not None:
                 lt = (n or 0.0) + (c or 0.0)
+
         total = lt if lt is not None else 0.0
         found = lt is not None
-        for tag in ST_DEBT_TAGS + CONVERTIBLE_TAGS:
+
+        st = self._instant_usd(cf, "ShortTermBorrowings", fy_end)
+        if st is not None:
+            total += st
+            found = True
+
+        for tag in LEASE_TAGS:
             v = self._instant_usd(cf, tag, fy_end)
             if v is not None:
                 total += v
                 found = True
+
+        if lt is None:  # convertibles are the primary debt when no LT-debt tag exists
+            for tag in CONVERTIBLE_TAGS:
+                v = self._instant_usd(cf, tag, fy_end)
+                if v is not None:
+                    total += v
+                    found = True
+
         return total if found else None
 
     def shares_outstanding(self, cf: dict, fy_end: str) -> Optional[float]:
@@ -216,7 +260,18 @@ class SECClient:
         target = _parse_date(fy_end)
         if target is None:
             return None
-        facts = [f for f in self._shares_facts(cf) if f.get("form") in ("10-K", "10-K/A")]
+        facts = [
+            f for f in self._shares_facts(cf) if f.get("form") in ("10-K", "10-K/A")
+        ]
+        # Fallback: some filers report period-end shares as us-gaap CommonStockSharesOutstanding.
+        facts += [
+            f
+            for f in cf["facts"].get("us-gaap", {})
+            .get("CommonStockSharesOutstanding", {})
+            .get("units", {})
+            .get("shares", [])
+            if f.get("form") in ("10-K", "10-K/A")
+        ]
         if not facts:
             return None
         window = [
@@ -225,12 +280,10 @@ class SECClient:
             if (end := _parse_date(f.get("end"))) is not None
             and target <= end <= target + timedelta(days=90)
         ]
-        candidates = window or facts
-        best = min(
-            candidates,
-            key=lambda f: abs((_parse_date(f.get("end")) - target).days),
-        )
-        return best["val"] if best else None
+        if not window:
+            return None  # no share count near this FYE; don't guess
+        best = min(window, key=lambda f: (_parse_date(f.get("end")) - target).days)
+        return best.get("val") if best else None
 
     def xbrl_value(self, cf: dict, tag: str, fy_end: str) -> Optional[float]:
         """Cross-check helper: look up an arbitrary us-gaap tag for a FY end.

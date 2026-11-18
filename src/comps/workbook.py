@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -106,37 +107,57 @@ def _median(vals: list[Optional[float]]) -> Optional[float]:
 
 def _write_bridge(ws, ticker: str, entries: list[dict]) -> None:
     ws.cell(row=1, column=1, value=f"{ticker} — Reported → Adjusted EBITDA bridge").font = TITLE_FONT
-    headers = ["Category", "Sign", "Amount ($)", "Source Quote", "Section", "Source"]
+    headers = ["Category", "Sign", "Signed Amount ($)", "Source Quote", "Section", "Source"]
     r = 3
     for entry in entries:
-        ws.cell(row=r, column=1, value=f"FY{entry['fiscal_year']} (ended {entry['fy_end']})").font = Font(bold=True)
+        ws.cell(row=r, column=1, value=f"FY{entry.get('fiscal_year')} (ended {entry.get('fy_end')})").font = Font(bold=True)
         r += 1
         ws.cell(row=r, column=1, value="Reported EBITDA (OpInc + D&A)")
-        ws.cell(row=r, column=3, value=entry["reported_ebitda"]).number_format = "#,##0"
+        ws.cell(row=r, column=3, value=entry.get("reported_ebitda")).number_format = "#,##0"
         r += 1
-        for adj in entry["adjustments"]:
-            url = entry["tenk_url"] if adj.source_document == "10-K" else entry["earnings_url"]
-            _write_header(ws, headers, row=r)
-            r += 1
+        _write_header(ws, headers, row=r)
+        r += 1
+        for adj in entry.get("adjustments", []):
+            # Route the hyperlink by the actual source document, and only show "open"
+            # when a link truly exists (never a dead, clickable-looking cell).
+            if adj.source_document == "10-K":
+                url = entry.get("tenk_url")
+            elif adj.source_document == "8-K_99.1":
+                url = entry.get("earnings_url")
+            else:
+                url = ""
             ws.cell(row=r, column=1, value=adj.category)
             ws.cell(row=r, column=2, value=adj.sign)
-            ws.cell(row=r, column=3, value=adj.amount).number_format = "#,##0"
+            ws.cell(row=r, column=3, value=adj.signed_amount).number_format = "#,##0"
             ws.cell(row=r, column=4, value=adj.source_quote)
             ws.cell(row=r, column=5, value=adj.source_section)
-            link = ws.cell(row=r, column=6, value="open")
+            link = ws.cell(row=r, column=6, value="")
             if url:
+                link.value = "open"
                 link.hyperlink = url
                 link.font = LINK_FONT
             r += 1
         ws.cell(row=r, column=1, value="Adjusted EBITDA (tool)").font = Font(bold=True)
-        ws.cell(row=r, column=3, value=entry["adjusted_ebitda"]).number_format = "#,##0"
+        ws.cell(row=r, column=3, value=entry.get("adjusted_ebitda")).number_format = "#,##0"
         ws.cell(row=r, column=3).font = Font(bold=True)
         r += 1
         ws.cell(row=r, column=1, value="Company-reported adjusted EBITDA (reference)")
-        ws.cell(row=r, column=3, value=entry["company_reported_adj_ebitda"]).number_format = "#,##0"
+        ws.cell(row=r, column=3, value=entry.get("company_reported_adj_ebitda")).number_format = "#,##0"
         r += 2
-    _set_widths(ws, {1: 34, 2: 10, 3: 16, 4: 90, 5: 22, 6: 10})
+    _set_widths(ws, {1: 34, 2: 10, 3: 18, 4: 90, 5: 22, 6: 10})
     ws.freeze_panes = "A3"
+
+
+def _safe_sheet_name(ticker: str, used: set[str]) -> str:
+    """Sanitize a ticker into a valid, unique Excel sheet title (<=31 chars)."""
+    base = re.sub(r"[\\/*?:\[\]]", "-", ticker).strip() or "TICKER"
+    name = ("Bridge - " + base)[:31]
+    suffix = 2
+    while name in used:
+        name = f"{('Bridge - ' + base)[:28]}~{suffix}"
+        suffix += 1
+    used.add(name)
+    return name
 
 
 def _write_flags(ws, flags: list[Flag]) -> None:
@@ -165,8 +186,9 @@ def write_workbook(
     comps = wb.create_sheet("Comps")
     _write_comps(comps, comps_rows)
 
+    used: set[str] = {"Comps", "Flags"}
     for ticker, entries in bridges.items():
-        ws = wb.create_sheet(f"Bridge - {ticker}")
+        ws = wb.create_sheet(_safe_sheet_name(ticker, used))
         _write_bridge(ws, ticker, entries)
 
     flags_ws = wb.create_sheet("Flags")

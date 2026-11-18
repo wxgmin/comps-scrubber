@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from comps.config import load_peers, load_policy  # noqa: E402
+from comps.config import PROJECT_ROOT, load_peers, load_policy  # noqa: E402
 from comps.pipeline import run  # noqa: E402
 from comps.workbook import write_workbook  # noqa: E402
 
@@ -18,10 +18,14 @@ def main() -> None:
     ap.add_argument("--output", help="Override output workbook path")
     args = ap.parse_args()
 
-    peers = load_peers(args.peers)
-    policy = load_policy(args.policy)
+    try:
+        peers = load_peers(args.peers)
+        policy = load_policy(args.policy)
+    except FileNotFoundError as e:
+        ap.error(str(e))
     if args.output:
-        peers.output = Path(args.output)
+        out = Path(args.output)
+        peers.output = out if out.is_absolute() else PROJECT_ROOT / out
 
     print(f"Running comps for {len(peers.peers)} peers x {peers.num_years} years...")
     rows, bridges, flags = run(peers, policy)

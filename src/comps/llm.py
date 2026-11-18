@@ -47,7 +47,7 @@ class OpenAIProvider(LLMProvider):
     def extract_json(self, system: str, user: str, json_schema: dict) -> dict:
         key = get_openai_api_key()
         if not key:
-            raise RuntimeError(_NOT_CONFIGURED)
+            raise RuntimeError("OPENAI_API_KEY is not set (required for LLM_PROVIDER='openai').")
         from openai import OpenAI
 
         client = OpenAI(api_key=key)
@@ -63,7 +63,10 @@ class OpenAIProvider(LLMProvider):
             },
             temperature=0.0,
         )
-        return json.loads(resp.choices[0].message.content or "{}")
+        choice = resp.choices[0]
+        if choice.finish_reason == "length":
+            raise RuntimeError("OpenAI response was truncated (finish_reason=length).")
+        return json.loads(choice.message.content or "{}")
 
 
 class OpenAICompatProvider(LLMProvider):
@@ -100,7 +103,10 @@ class OpenAICompatProvider(LLMProvider):
             response_format={"type": "json_object"},
             temperature=0.0,
         )
-        return json.loads(resp.choices[0].message.content or "{}")
+        choice = resp.choices[0]
+        if choice.finish_reason == "length":
+            raise RuntimeError("OpenAI-compatible response was truncated (finish_reason=length).")
+        return json.loads(choice.message.content or "{}")
 
 
 class AnthropicProvider(LLMProvider):
@@ -189,12 +195,13 @@ class CodexProvider(LLMProvider):
                 raise RuntimeError(f"codex exec failed (exit {proc.returncode}): {tail}")
 
             raw = out_file.read_text(encoding="utf-8").strip()
-            if raw.startswith("```"):
-                raw = raw.strip("`")
-                if "\n" in raw:
-                    raw = raw[raw.find("\n") + 1 :]
-                raw = raw.strip()
-        return json.loads(raw)
+        # The -o file should be clean JSON; defensively extract the first {...} block
+        # in case Codex wrapped it in a markdown fence or prose.
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end <= start:
+            raise RuntimeError(f"codex returned no JSON object: {raw[:200]}")
+        return json.loads(raw[start : end + 1])
 
 
 PROVIDERS: dict[str, type[LLMProvider]] = {
@@ -225,6 +232,14 @@ def _find_codex() -> str | None:
                         return val
         except OSError:
             pass
+    # Standalone installer location on Windows.
+    local = Path(os.environ.get("LOCALAPPDATA", "")) / "OpenAI" / "Codex" / "bin"
+    try:
+        candidates = sorted(local.glob("*/codex.exe"), reverse=True)
+        if candidates:
+            return str(candidates[0])
+    except OSError:
+        pass
     # Windows Store installs live under WindowsApps with a versioned folder.
     pf = os.environ.get("ProgramFiles", r"C:\Program Files")
     base = Path(pf) / "WindowsApps"
@@ -243,6 +258,8 @@ def resolve_provider_name() -> str:
     if name in PROVIDERS:
         return name
     if name == "auto":
+        if get_openai_base_url():
+            return "openai-compat"
         if get_openai_api_key():
             return "openai"
         if get_anthropic_api_key():

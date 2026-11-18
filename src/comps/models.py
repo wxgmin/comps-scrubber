@@ -58,7 +58,8 @@ class Adjustment:
     # filled in by the verifier
     verified: bool = False
     verification_status: str = ""
-    xbrl_match: Optional[float] = None
+    xbrl_match: Optional[float] = None  # signed XBRL value (gain > 0, loss < 0)
+    sign_conflict: bool = False
 
     @property
     def signed_amount(self) -> float:

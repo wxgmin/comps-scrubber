@@ -38,6 +38,17 @@ XBRL_TAGS: dict[str, list[str]] = {
     ],
 }
 
+# GainLoss* tags are directional in GAAP: a positive value is a gain, negative is a loss.
+DIRECTIONAL_TAGS = {
+    "GainLossOnSaleOfBusiness",
+    "GainLossOnDispositionOfAssets",
+    "GainLossOnSaleOfAssets",
+    "DisposalGroupNotDiscontinuedOperationGainLossOnDisposal",
+    "GainLossRelatedToLitigationSettlement",
+}
+
+_MIN_QUOTE_ALNUM = 12
+
 _NUMBER_RE = re.compile(
     r"(?<![\w.])-?\$?\s*([\d,]+(?:\.\d+)?)\s*(billion|bn|million|mm|thousand|k)?",
     re.IGNORECASE,
@@ -55,13 +66,20 @@ def _normalize_lenient(text: str) -> str:
 
 
 def quote_matches(quote: str, text: str) -> bool:
-    """Verbatim check: the quoted sentence must appear in the source text."""
+    """Verbatim check: the quoted sentence must appear in the source text.
+
+    Requires a minimum alphanumeric length so a one- or two-token quote cannot
+    trivially "match" everywhere.
+    """
     if not quote or not text:
+        return False
+    compact = _normalize_lenient(quote)
+    if len(compact) < _MIN_QUOTE_ALNUM:
         return False
     if normalize(quote) in normalize(text):
         return True
     # fallback: ignore punctuation/case/whitespace differences
-    return _normalize_lenient(quote) in _normalize_lenient(text) if len(quote) >= 12 else False
+    return compact in _normalize_lenient(text)
 
 
 def extract_numbers(text: str) -> list[tuple[float, float]]:
@@ -94,8 +112,10 @@ def _close(a: float, b: float, rel: float = 0.02) -> bool:
 def amount_in_quote(amount: float, quote: str) -> bool:
     """The amount must be recoverable from digits + scale in the exact quoted sentence.
 
-    Tolerates a table/unit header that lives outside the quote (e.g. the quote says
-    "restructuring charges: 18,639" while a separate header says "in thousands").
+    Tolerates a unit header that lives outside the quote (e.g. the quote says
+    "restructuring charges: 18,639" while a separate table header says "in thousands"
+    or "in millions"). That fallback is applied ONLY when the number carries no explicit
+    scale word, and only for the two common header units (thousands, millions).
     """
     if amount is None or not quote:
         return False
@@ -106,8 +126,8 @@ def amount_in_quote(amount: float, quote: str) -> bool:
         candidate = val * mult
         if _close(amount, candidate):
             return True
-        for pow10 in (1e3, 1e6, 1e9):
-            if _close(amount, candidate * pow10) or _close(amount, candidate / pow10):
+        if mult == 1.0:  # no explicit scale word -> tolerate a unit header
+            if _close(amount, candidate * 1e3) or _close(amount, candidate * 1e6):
                 return True
     return False
 
@@ -124,6 +144,7 @@ def verify_adjustment(
 
     if not quote_matches(adj.source_quote, source):
         adj.verification_status = "quote_not_found"
+        adj.verified = False
         return Flag(
             ticker="",
             fy_end=adj.fy_end,
@@ -134,6 +155,7 @@ def verify_adjustment(
 
     if not amount_in_quote(adj.amount, adj.source_quote):
         adj.verification_status = "amount_not_in_quote"
+        adj.verified = False
         return Flag(
             ticker="",
             fy_end=adj.fy_end,
@@ -142,23 +164,39 @@ def verify_adjustment(
             detail=f"{adj.amount:,.0f} :: {adj.source_quote[:160]}",
         )
 
-    # XBRL cross-check is a secondary confirmation, not a hard gate (the quote is
-    # authoritative for the amount).
+    # XBRL cross-check: confirm magnitude and, for directional tags, direction.
     for tag in XBRL_TAGS.get(adj.category, []):
         v = sec_client.xbrl_value(companyfacts, tag, adj.fy_end)
-        if v is not None:
-            adj.xbrl_match = v
-            if _close(abs(v), adj.amount, rel=0.05):
-                adj.verification_status = "ok_xbrl"
-            elif _close(abs(v), adj.amount, rel=0.25):
-                adj.verification_status = "ok_xbrl_soft"
-            else:
-                adj.verification_status = "xbrl_mismatch"
-            break
+        if v is None:
+            continue
+        adj.xbrl_match = v  # signed (gain > 0, loss < 0 for GainLoss* tags)
+        mag = abs(v)
+        if _close(mag, adj.amount, rel=0.05):
+            adj.verification_status = "ok_xbrl"
+        elif _close(mag, adj.amount, rel=0.25):
+            adj.verification_status = "ok_xbrl_soft"
+        else:
+            adj.verification_status = "xbrl_mismatch"
+        if tag in DIRECTIONAL_TAGS and v != 0:
+            expected = "subtract" if v > 0 else "add_back"
+            if adj.sign != expected:
+                adj.sign_conflict = True
+        break
     else:
-        adj.verification_status = adj.verification_status or "ok"
+        adj.verification_status = "ok"
 
-    adj.verified = adj.verification_status in ("ok", "ok_xbrl", "ok_xbrl_soft", "xbrl_mismatch")
+    # A gross (>25%) discrepancy against the independent XBRL tag needs human review.
+    if adj.verification_status == "xbrl_mismatch":
+        adj.verified = False
+        return Flag(
+            ticker="",
+            fy_end=adj.fy_end,
+            category=adj.category,
+            reason="xbrl_mismatch",
+            detail=f"quote={adj.amount:,.0f} xbrl={adj.xbrl_match:,.0f}",
+        )
+
+    adj.verified = True
     return None
 
 

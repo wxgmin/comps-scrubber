@@ -3,7 +3,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from comps.models import Adjustment, CompsRow, Flag
-from comps.workbook import write_workbook
+from comps.workbook import _safe_sheet_name, write_workbook
 
 
 def test_workbook_writes(tmp_path: Path):
@@ -35,3 +35,21 @@ def test_workbook_writes(tmp_path: Path):
     assert "Comps" in wb.sheetnames
     assert "Bridge - MSFT" in wb.sheetnames
     assert "Flags" in wb.sheetnames
+
+
+def test_safe_sheet_name_sanitizes():
+    used = set()
+    assert _safe_sheet_name("BRK/B", used) == "Bridge - BRK-B"
+
+
+def test_safe_sheet_name_truncates():
+    used = set()
+    name = _safe_sheet_name("A" * 40, used)
+    assert len(name) <= 31
+
+
+def test_safe_sheet_name_deduplicates():
+    used = set()
+    a = _safe_sheet_name("MSFT", used)
+    b = _safe_sheet_name("MSFT", used)
+    assert a != b

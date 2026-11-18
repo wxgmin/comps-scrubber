@@ -1,27 +1,55 @@
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 from .models import CompsRow, Financials
 
 
+def _as_price(v) -> Optional[float]:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) and f > 0 else None
+
+
 def get_price(ticker: str) -> Optional[float]:
     import yfinance as yf
 
-    t = yf.Ticker(ticker)
     try:
-        p = t.fast_info.get("last_price")
-        if p:
-            return float(p)
+        t = yf.Ticker(ticker)
+    except Exception:
+        return None
+    try:
+        p = _as_price(t.fast_info.get("last_price"))
+        if p is not None:
+            return p
     except Exception:
         pass
     try:
         h = t.history(period="5d")
         if not h.empty:
-            return float(h["Close"].iloc[-1])
+            return _as_price(h["Close"].iloc[-1])
     except Exception:
         pass
     return None
+
+
+def get_shares_outstanding(ticker: str) -> Optional[float]:
+    """Current shares outstanding from yfinance (fallback when XBRL has none)."""
+    import yfinance as yf
+
+    try:
+        t = yf.Ticker(ticker)
+    except Exception:
+        return None
+    try:
+        info = t.info
+        shares = info.get("sharesOutstanding")
+        return _as_price(shares)  # same finite + positive guard
+    except Exception:
+        return None
 
 
 def market_cap(price: Optional[float], shares: Optional[float]) -> Optional[float]:
@@ -34,6 +62,13 @@ def enterprise_value(mcap: Optional[float], debt: Optional[float], cash: Optiona
     if mcap is None or debt is None or cash is None:
         return None
     return mcap + debt - cash
+
+
+def _ratio(numer: Optional[float], denom: Optional[float]) -> Optional[float]:
+    """A valuation multiple only makes sense when both sides are positive."""
+    if numer is None or denom is None or numer <= 0 or denom <= 0:
+        return None
+    return numer / denom
 
 
 def compute_row(
@@ -60,26 +95,8 @@ def compute_row(
     ev = enterprise_value(mcap, fin.total_debt, fin.cash)
     row.enterprise_value = ev
 
-    if ev and fin.revenue:
-        row.ev_revenue = ev / fin.revenue
-    if ev and fin.reported_ebitda and fin.reported_ebitda > 0:
-        row.ev_ebitda_reported = ev / fin.reported_ebitda
-    if ev and adjusted_ebitda and adjusted_ebitda > 0:
-        row.ev_ebitda_adjusted = ev / adjusted_ebitda
-    if mcap and fin.net_income and fin.net_income > 0:
-        row.pe = mcap / fin.net_income
+    row.ev_revenue = _ratio(ev, fin.revenue)
+    row.ev_ebitda_reported = _ratio(ev, fin.reported_ebitda)
+    row.ev_ebitda_adjusted = _ratio(ev, adjusted_ebitda)
+    row.pe = _ratio(mcap, fin.net_income)
     return row
-
-
-def _mean(vals: list[float]) -> Optional[float]:
-    vals = [v for v in vals if v is not None]
-    return sum(vals) / len(vals) if vals else None
-
-
-def _median(vals: list[float]) -> Optional[float]:
-    vals = sorted(v for v in vals if v is not None)
-    if not vals:
-        return None
-    n = len(vals)
-    mid = n // 2
-    return vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2

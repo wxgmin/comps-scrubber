@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
+from typing import Optional
 
 from .config import CACHE_DIR
 from .llm import extract_json
@@ -97,6 +99,11 @@ sales, and stock-based compensation. Do NOT include ordinary recurring operating
 non-GAAP reconciliation). If the company does not disclose one, use amount null and an empty \
 source_quote."""
 
+# Bump-cache key: changing the prompt, schema, or keywords invalidates cached extractions.
+_CACHE_VERSION = hashlib.sha1(
+    (_SYSTEM + json.dumps(_SCHEMA, sort_keys=True) + "|".join(KEYWORDS)).encode("utf-8")
+).hexdigest()[:12]
+
 
 def _excerpt(text: str, keywords: list[str], window: int = 1300, max_total: int = 32000) -> str:
     low = text.lower()
@@ -155,7 +162,12 @@ def extract(ticker: str, fy_end: str, tenk_text: str, earnings_text: str) -> Ext
     """Run (or load from cache) the LLM extraction for one company x fiscal year."""
     path = _cache_path(ticker, fy_end)
     if path.exists():
-        return _from_dict(json.loads(path.read_text(encoding="utf-8")))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if data.get("_cache_version") == _CACHE_VERSION:
+                return _from_dict(data)
+        except (json.JSONDecodeError, OSError):
+            pass  # corrupt or stale cache -> re-extract
 
     source_pack = build_source_pack(ticker, fy_end, tenk_text, earnings_text)
     user = (
@@ -164,29 +176,47 @@ def extract(ticker: str, fy_end: str, tenk_text: str, earnings_text: str) -> Ext
         + source_pack
     )
     data = extract_json(_SYSTEM, user, _SCHEMA)
+    data["_cache_version"] = _CACHE_VERSION
     path.write_text(json.dumps(data), encoding="utf-8")
     return _from_dict(data)
+
+
+def _to_float_or_none(v) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _from_dict(data: dict) -> ExtractionResult:
     rep = data.get("company_reported_adjusted_ebitda") or {}
     reported = ReportedAdjustedEbitda(
-        amount=rep.get("amount"),
+        amount=_to_float_or_none(rep.get("amount")),
         source_quote=rep.get("source_quote", ""),
         source_doc=rep.get("source_doc", ""),
     )
     adjustments: list[Adjustment] = []
     for item in data.get("adjustments", []):
         try:
+            category = item["category"]
+            sign = item["sign"]
+            source_document = item.get("source_document", "")
+            # Enforce the schema enums at runtime — an out-of-enum value must not slip through.
+            if category not in CATEGORIES or sign not in ("add_back", "subtract"):
+                continue
+            if source_document not in ("10-K", "8-K_99.1"):
+                continue
             adjustments.append(
                 Adjustment(
-                    category=item["category"],
+                    category=category,
                     amount=float(item["amount"]),
-                    sign=item["sign"],
+                    sign=sign,
                     fiscal_year=0,  # overwritten by pipeline
                     fy_end="",  # overwritten by pipeline
                     source_quote=item.get("source_quote", ""),
-                    source_document=item.get("source_document", ""),
+                    source_document=source_document,
                     source_section=item.get("source_section", ""),
                     is_recurring=bool(item.get("is_recurring", False)),
                     confidence=float(item.get("confidence", 0.0) or 0.0),
