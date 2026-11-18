@@ -119,7 +119,31 @@ def get_10k_markdown(info: FilingInfo) -> str:
 
 def _has_non_gaap(text: str) -> bool:
     t = text.lower()
-    return any(k in t for k in ("adjusted ebitda", "non-gaap", "reconciliation", "adjusted net"))
+    return any(
+        k in t
+        for k in (
+            "adjusted ebitda",
+            "non-gaap",
+            "non gaap",
+            "reconciliation",
+            "adjusted net",
+            "adjusted operating",
+            "adjusted eps",
+            "adjusted ebit",
+            "free cash flow",
+            "pro forma",
+        )
+    )
+
+
+_ANNUAL_MARKERS = ("full year", "fiscal year", "fourth quarter", "twelve months", "12 months", "annual")
+_QUARTERLY_MARKERS = ("first quarter", "second quarter", "third quarter")
+
+
+def _is_annual_release(text: str) -> bool:
+    """True when the release reads like a full-year / Q4 annual results release."""
+    t = text.lower()
+    return any(m in t for m in _ANNUAL_MARKERS) and not any(m in t for m in _QUARTERLY_MARKERS)
 
 
 def get_earnings_release_99_1(ticker: str, fy_end: str) -> Optional[tuple[str, str, str]]:
@@ -151,11 +175,11 @@ def get_earnings_release_99_1(ticker: str, fy_end: str) -> Optional[tuple[str, s
         for ex in f.attachments.query("document_type == 'EX-99.1'").documents:
             text = ex.text() or ""
             if _has_non_gaap(text):
-                matches.append((fdate, text, ex.url, f.accession_no))
+                matches.append((fdate, text, ex.url, f.accession_no, _is_annual_release(text)))
                 break  # one 99.1 per filing
     if not matches:
         return None
-    # The annual (Q4/full-year) release is the earliest Item 2.02 filing after the FYE.
-    matches.sort(key=lambda m: m[0])
-    _, text, url, acc = matches[0]
+    # Prefer the annual (Q4/full-year) release, then the earliest filing.
+    matches.sort(key=lambda m: (not m[4], m[0]))
+    _, text, url, acc, _ = matches[0]
     return text, url, acc

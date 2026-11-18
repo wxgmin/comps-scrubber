@@ -15,8 +15,10 @@ def _as_price(v) -> Optional[float]:
 
 
 def get_price(ticker: str) -> Optional[float]:
-    import yfinance as yf
-
+    try:
+        import yfinance as yf
+    except ImportError:
+        return None
     try:
         t = yf.Ticker(ticker)
     except Exception:
@@ -38,8 +40,10 @@ def get_price(ticker: str) -> Optional[float]:
 
 def get_shares_outstanding(ticker: str) -> Optional[float]:
     """Current shares outstanding from yfinance (fallback when XBRL has none)."""
-    import yfinance as yf
-
+    try:
+        import yfinance as yf
+    except ImportError:
+        return None
     try:
         t = yf.Ticker(ticker)
     except Exception:
@@ -55,18 +59,30 @@ def get_shares_outstanding(ticker: str) -> Optional[float]:
 def market_cap(price: Optional[float], shares: Optional[float]) -> Optional[float]:
     if price is None or shares is None or shares <= 0:
         return None
+    if not math.isfinite(price) or not math.isfinite(shares):
+        return None
     return price * shares
 
 
 def enterprise_value(mcap: Optional[float], debt: Optional[float], cash: Optional[float]) -> Optional[float]:
     if mcap is None or debt is None or cash is None:
         return None
+    if not math.isfinite(mcap) or not math.isfinite(debt) or not math.isfinite(cash):
+        return None
     return mcap + debt - cash
 
 
 def _ratio(numer: Optional[float], denom: Optional[float]) -> Optional[float]:
-    """A valuation multiple only makes sense when both sides are positive."""
-    if numer is None or denom is None or numer <= 0 or denom <= 0:
+    """A multiple is not meaningful when the denominator is non-positive.
+
+    The numerator may legitimately be negative (a net-cash company has negative EV),
+    so we do NOT drop on numerator sign.
+    """
+    if numer is None or denom is None:
+        return None
+    if not math.isfinite(numer) or not math.isfinite(denom):
+        return None
+    if denom <= 0:
         return None
     return numer / denom
 

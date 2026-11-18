@@ -164,10 +164,10 @@ def extract(ticker: str, fy_end: str, tenk_text: str, earnings_text: str) -> Ext
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            if data.get("_cache_version") == _CACHE_VERSION:
-                return _from_dict(data)
-        except (json.JSONDecodeError, OSError):
-            pass  # corrupt or stale cache -> re-extract
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError):
+            data = None
+        if isinstance(data, dict) and data.get("_cache_version") == _CACHE_VERSION:
+            return _from_dict(data)
 
     source_pack = build_source_pack(ticker, fy_end, tenk_text, earnings_text)
     user = (
@@ -192,13 +192,20 @@ def _to_float_or_none(v) -> Optional[float]:
 
 def _from_dict(data: dict) -> ExtractionResult:
     rep = data.get("company_reported_adjusted_ebitda") or {}
+    if not isinstance(rep, dict):
+        rep = {}
     reported = ReportedAdjustedEbitda(
         amount=_to_float_or_none(rep.get("amount")),
         source_quote=rep.get("source_quote", ""),
         source_doc=rep.get("source_doc", ""),
     )
     adjustments: list[Adjustment] = []
-    for item in data.get("adjustments", []):
+    raw_adjustments = data.get("adjustments", [])
+    if not isinstance(raw_adjustments, list):
+        raw_adjustments = []
+    for item in raw_adjustments:
+        if not isinstance(item, dict):
+            continue
         try:
             category = item["category"]
             sign = item["sign"]

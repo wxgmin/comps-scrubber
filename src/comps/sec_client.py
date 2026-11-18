@@ -246,7 +246,34 @@ class SECClient:
                 found = True
 
         if lt is None:  # convertibles are the primary debt when no LT-debt tag exists
-            for tag in CONVERTIBLE_TAGS:
+            conv = self._instant_usd(cf, "ConvertibleDebt", fy_end)
+            if conv is not None:
+                total += conv
+                found = True
+            else:
+                n = self._instant_usd(cf, "ConvertibleDebtNoncurrent", fy_end)
+                c = self._instant_usd(cf, "ConvertibleDebtCurrent", fy_end)
+                if n is not None or c is not None:
+                    total += (n or 0.0) + (c or 0.0)
+                    found = True
+                else:
+                    for tag in ("ConvertibleNotesPayableCurrent", "ConvertibleLongTermNotesPayable"):
+                        v = self._instant_usd(cf, tag, fy_end)
+                        if v is not None:
+                            total += v
+                            found = True
+
+        # Last-resort: filers that report interest-bearing debt ONLY under these tags.
+        if not found:
+            for tag in (
+                "CommercialPaper",
+                "NotesPayableCurrent",
+                "NotesPayable",
+                "DebtCurrent",
+                "DebtNoncurrent",
+                "DebtAndCapitalLeaseObligations",
+                "LongTermDebtAndCapitalLeaseObligations",
+            ):
                 v = self._instant_usd(cf, tag, fy_end)
                 if v is not None:
                     total += v

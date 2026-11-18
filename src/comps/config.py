@@ -24,7 +24,7 @@ def get_openai_api_key() -> str | None:
 
 def get_openai_model() -> str:
     _load_env()
-    return (os.getenv("OPENAI_MODEL") or "gpt-4o").strip()
+    return (os.getenv("OPENAI_MODEL") or "").strip() or "gpt-4o"
 
 
 def get_openai_base_url() -> str:
@@ -39,7 +39,7 @@ def get_anthropic_api_key() -> str | None:
 
 def get_anthropic_model() -> str:
     _load_env()
-    return (os.getenv("ANTHROPIC_MODEL") or "claude-sonnet-4-20250514").strip()
+    return (os.getenv("ANTHROPIC_MODEL") or "").strip() or "claude-sonnet-4-20250514"
 
 
 def get_llm_provider() -> str:

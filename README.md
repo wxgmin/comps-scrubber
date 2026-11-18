@@ -70,6 +70,19 @@ Custom run:
 python cli.py --peers config/peers.yaml --policy config/policy.yaml --output output/my_comps.xlsx
 ```
 
+## Web front end
+
+A self-hosted Streamlit dashboard:
+
+```bash
+streamlit run app.py
+```
+
+Opens at `http://localhost:8501`. Enter tickers and adjustment-policy toggles in the
+sidebar, click **Run comps**, then browse the comps table, per-company bridges (each
+adjustment with its verbatim quote and a clickable source link), and the flags sheet.
+Download the Excel workbook from the **Comps table** tab.
+
 ## Configuration
 
 **`config/peers.yaml`** — tickers and number of fiscal years:

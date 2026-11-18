@@ -77,17 +77,30 @@ def apply_policy(
                     detail=adj.rationale[:160],
                 )
             )
-        if adj.sign_conflict:
-            flags.append(
-                Flag(
-                    ticker=ticker,
-                    fy_end=fy_end,
-                    category=adj.category,
-                    reason="sign_conflict",
-                    detail=(
-                        f"XBRL direction conflicts with sign; xbrl={adj.xbrl_match:,.0f} "
-                        f"(gain>0, loss<0)."
-                    ),
+        if adj.sign_conflict and adj.xbrl_match is not None:
+            expected = "subtract" if adj.xbrl_match > 0 else "add_back"
+            if adj.sign != expected:
+                flags.append(
+                    Flag(
+                        ticker=ticker,
+                        fy_end=fy_end,
+                        category=adj.category,
+                        reason="sign_conflict",
+                        detail=(
+                            f"XBRL direction conflicts with sign; xbrl={adj.xbrl_match:,.0f} "
+                            f"(gain>0, loss<0)."
+                        ),
+                    )
                 )
-            )
+            elif treatment == "auto":
+                flags.append(
+                    Flag(
+                        ticker=ticker,
+                        fy_end=fy_end,
+                        category=adj.category,
+                        reason="sign_auto_corrected",
+                        detail="Sign corrected from XBRL gain/loss direction.",
+                    )
+                )
+            # else: a forced add_back/subtract already resolved the conflict -> no flag
     return included, flags

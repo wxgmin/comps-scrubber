@@ -19,7 +19,10 @@ _M = 1_000_000.0
 
 
 def _num(v) -> Optional[float]:
-    return None if v is None else float(v)
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _write_header(ws, headers: list[str], row: int = 1) -> None:

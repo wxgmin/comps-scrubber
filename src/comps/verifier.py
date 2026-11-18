@@ -50,7 +50,7 @@ DIRECTIONAL_TAGS = {
 _MIN_QUOTE_ALNUM = 12
 
 _NUMBER_RE = re.compile(
-    r"(?<![\w.])-?\$?\s*([\d,]+(?:\.\d+)?)\s*(billion|bn|million|mm|thousand|k)?",
+    r"(?<![\w.])-?\$?\s*([\d,]+(?:\.\d+)?)\s*(billion|million|thousand|bn|mm|k|b|m)?",
     re.IGNORECASE,
 )
 
@@ -93,9 +93,9 @@ def extract_numbers(text: str) -> list[tuple[float, float]]:
             continue
         scale = (m.group(2) or "").lower()
         mult = 1.0
-        if scale in ("billion", "bn"):
+        if scale in ("billion", "bn", "b"):
             mult = 1e9
-        elif scale in ("million", "mm"):
+        elif scale in ("million", "mm", "m"):
             mult = 1e6
         elif scale in ("thousand", "k"):
             mult = 1e3
@@ -132,6 +132,13 @@ def amount_in_quote(amount: float, quote: str) -> bool:
     return False
 
 
+def _check_sign(adj: Adjustment, tag: str, v: float) -> None:
+    if tag in DIRECTIONAL_TAGS and v != 0:
+        expected = "subtract" if v > 0 else "add_back"
+        if adj.sign != expected:
+            adj.sign_conflict = True
+
+
 def verify_adjustment(
     adj: Adjustment,
     tenk_text: str,
@@ -165,25 +172,28 @@ def verify_adjustment(
         )
 
     # XBRL cross-check: confirm magnitude and, for directional tags, direction.
+    # Iterate ALL candidate tags and pick the best magnitude match (a wrong-but-present
+    # earlier tag must not shadow a matching later tag).
+    best_tag, best_v, best_status = None, None, None
     for tag in XBRL_TAGS.get(adj.category, []):
         v = sec_client.xbrl_value(companyfacts, tag, adj.fy_end)
         if v is None:
             continue
-        adj.xbrl_match = v  # signed (gain > 0, loss < 0 for GainLoss* tags)
-        mag = abs(v)
-        if _close(mag, adj.amount, rel=0.05):
+        if _close(abs(v), adj.amount, rel=0.05):
+            adj.xbrl_match = v
             adj.verification_status = "ok_xbrl"
-        elif _close(mag, adj.amount, rel=0.25):
-            adj.verification_status = "ok_xbrl_soft"
-        else:
-            adj.verification_status = "xbrl_mismatch"
-        if tag in DIRECTIONAL_TAGS and v != 0:
-            expected = "subtract" if v > 0 else "add_back"
-            if adj.sign != expected:
-                adj.sign_conflict = True
-        break
+            _check_sign(adj, tag, v)
+            break
+        if best_v is None or abs(abs(v) - adj.amount) < abs(abs(best_v) - adj.amount):
+            best_tag, best_v = tag, v
+            best_status = "ok_xbrl_soft" if _close(abs(v), adj.amount, rel=0.25) else "xbrl_mismatch"
     else:
-        adj.verification_status = "ok"
+        if best_v is not None:
+            adj.xbrl_match = best_v
+            adj.verification_status = best_status
+            _check_sign(adj, best_tag, best_v)
+        else:
+            adj.verification_status = "ok"
 
     # A gross (>25%) discrepancy against the independent XBRL tag needs human review.
     if adj.verification_status == "xbrl_mismatch":

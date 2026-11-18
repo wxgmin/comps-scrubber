@@ -39,7 +39,7 @@ def test_auto_sign_correction_on_conflict():
     adj = _adj("Asset_Sale", sign="add_back", sign_conflict=True, xbrl_match=50_000_000)
     included, flags = apply_policy([adj], p, "MSFT", "2025-06-30")
     assert included[0].sign == "subtract"  # gain corrected away from add_back
-    assert any(f.reason == "sign_conflict" for f in flags)
+    assert any(f.reason == "sign_auto_corrected" for f in flags)
 
 
 def test_forced_add_back_overrides():
